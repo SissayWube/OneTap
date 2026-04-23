@@ -111,35 +111,75 @@ func injectIntentionalErrors(records []models.CustomerRecord) []models.CustomerR
 	return out
 }
 
+// ProcessSampleCustomers validates a list of customer records in batches and returns comprehensive results.
+// This function is the core of the batch validation workflow, processing records in groups of 10 for
+// better organization and progress tracking.
+//
+// Process Flow:
+// 1. Inject intentional errors for QA demonstration (indices 12 and 35)
+// 2. Divide records into batches of 10
+// 3. Validate each batch against canonical customer data
+// 4. Store validation logs and processed records for audit trail
+// 5. Aggregate results across all batches
+//
+// Parameters:
+//   - ctx: Request context for cancellation and timeout handling
+//   - records: Slice of customer records to validate
+//
+// Returns:
+//   - BatchProcessingResult containing:
+//   - Summary statistics (total, passed, failed counts)
+//   - Per-batch results with error type breakdown
+//   - Individual validation results for each record
 func (s *ValidationService) ProcessSampleCustomers(ctx context.Context, records []models.CustomerRecord) BatchProcessingResult {
+	// Define batch size for processing records in groups
 	const batchSize = 10
 	total := len(records)
+
+	// Calculate number of batches needed (rounds up for partial batches)
+	// Example: 50 records / 10 = 5 batches, 55 records / 10 = 6 batches
 	numBatches := (total + batchSize - 1) / batchSize
 
+	// Inject intentional errors for QA demonstration:
+	// - Index 12 (batch 2): Invalid account format
+	// - Index 35 (batch 4): Name mismatch
 	records = injectIntentionalErrors(records)
 
-	var allResults []ValidationResult
-	var batchResults []BatchResult
-	passed, failed := 0, 0
+	// Initialize result collectors
+	var allResults []ValidationResult // Individual validation results for each record
+	var batchResults []BatchResult    // Summary results for each batch
+	passed, failed := 0, 0            // Running totals across all batches
 
+	// Process each batch sequentially
 	for b := 0; b < numBatches; b++ {
+		// Calculate batch boundaries
 		start := b * batchSize
 		end := start + batchSize
+
+		// Handle last batch which may be smaller than batchSize
 		if end > total {
 			end = total
 		}
+
+		// Extract current batch slice
 		batch := records[start:end]
 
+		// Validate all records in the current batch
 		results := s.ValidateBatch(ctx, batch)
+
+		// Update record indices to reflect position in overall dataset
+		// (ValidateBatch returns indices relative to batch, we need global indices)
 		for i := range results {
 			results[i].RecordIndex = start + i
 		}
 
+		// Store validation results in persistent storage for audit trail
 		for i, r := range results {
+			// Create detailed validation log entry
 			s.validationStore.CreateValidationLog(&models.ValidationLog{
 				ID:               uuid.New().String(),
 				RecordIndex:      r.RecordIndex,
-				BatchNumber:      b + 1,
+				BatchNumber:      b + 1, // Batch numbers are 1-indexed for user display
 				Verified:         r.Verified,
 				Errors:           r.Errors,
 				ErrorDetails:     r.ErrorDetails,
@@ -147,6 +187,8 @@ func (s *ValidationService) ProcessSampleCustomers(ctx context.Context, records 
 				NormalizedRecord: r.NormalizedRecord,
 				CreatedAt:        time.Now(),
 			})
+
+			// Create simplified processed record entry
 			s.validationStore.SaveProcessedRecord(&models.ProcessedRecord{
 				ID:          uuid.New().String(),
 				RecordIndex: r.RecordIndex,
@@ -158,13 +200,22 @@ func (s *ValidationService) ProcessSampleCustomers(ctx context.Context, records 
 			})
 		}
 
+		// Generate batch summary with error type breakdown
 		br := s.batchResult(b+1, results)
 		batchResults = append(batchResults, br)
+
+		// Accumulate all individual results
 		allResults = append(allResults, results...)
+
+		// Update running totals
 		passed += br.PassCount
 		failed += br.FailCount
 	}
 
+	// Return comprehensive results including:
+	// - Overall statistics
+	// - Per-batch summaries
+	// - Individual validation results
 	return BatchProcessingResult{
 		TotalRecords:      total,
 		TotalBatches:      numBatches,

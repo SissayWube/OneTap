@@ -51,33 +51,40 @@ func CalculateStabilityScore(variance float64) float64 {
 }
 
 func (s *Service) CalculateRating(ctx context.Context, accountNo string) (models.CustomerRating, error) {
+	// Verify the customer exists before attempting to build a rating.
 	if _, err := s.customerStore.GetCustomer(accountNo); err != nil {
 		return models.CustomerRating{}, ErrCustomerNotFound
 	}
 
+	// Fetch transaction metrics used to derive the rating components.
 	stats, err := s.transactionService.CalculateTransactionStats(ctx, accountNo)
 	if err != nil {
 		return models.CustomerRating{}, err
 	}
 
+	// Normalize each transaction metric to a 0–10 score.
 	countScore := CalculateTransactionCountScore(stats.TotalCount)
 	volumeScore := CalculateTransactionVolumeScore(stats.TotalVolume)
 	durationScore := CalculateDurationScore(stats.DateRangeDays)
 	stabilityScore := CalculateStabilityScore(stats.BalanceVariance)
 
+	// Weighted sum of all component scores produces the overall rating.
 	total := (0.30 * countScore) + (0.30 * volumeScore) + (0.25 * durationScore) + (0.15 * stabilityScore)
 	if total < 1.0 {
+		// Ensure the rating floor does not fall below 1.
 		total = 1.0
 	}
 
 	isCapped := false
 	capReason := ""
+	// Apply a cap for customers with too few transactions.
 	if stats.TotalCount < 3 && total > 5.0 {
 		total = 5.0
 		isCapped = true
 		capReason = "fewer than 3 transactions"
 	}
 
+	// Round the final rating to one decimal place for presentation.
 	rating := math.Round(total*10) / 10
 
 	return models.CustomerRating{
